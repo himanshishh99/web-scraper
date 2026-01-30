@@ -3,3 +3,6 @@
 test_till_extract.py
 test_graph.py
 test_api.py
+__pycache__
+.venv
+venv
