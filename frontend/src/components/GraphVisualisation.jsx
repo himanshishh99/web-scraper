@@ -11,123 +11,212 @@ const GraphVisualization = ({ graphData, loading, error }) => {
   const [stats, setStats] = useState(null);
 
   useEffect(() => {
-    if (!graphData || !containerRef.current) return;
+    if (!graphData || !containerRef.current) {
+      console.log('Early return - missing graphData or container');
+      return;
+    }
 
-    const nodes = graphData.entities?.map(entity => ({
+    console.log('Creating graph with data:', graphData);
+
+    if (!graphData.entities || !Array.isArray(graphData.entities)) {
+      console.error('Invalid graphData.entities:', graphData.entities);
+      return;
+    }
+
+    if (!graphData.relationships || !Array.isArray(graphData.relationships)) {
+      console.error('Invalid graphData.relationships:', graphData.relationships);
+      return;
+    }
+
+    // Destroy previous instance BEFORE creating new one
+    if (cyRef.current) {
+      console.log('Destroying previous cytoscape instance');
+      try {
+        cyRef.current.destroy();
+      } catch (e) {
+        console.warn('Error destroying previous instance:', e);
+      }
+      cyRef.current = null;
+    }
+
+    // Create nodes and build a Set of valid node IDs
+    const nodes = graphData.entities.map(entity => ({
       data: {
-        id: entity.id,
-        label: entity.name,
-        type: entity.type,
+        id: String(entity.id || entity.name),
+        label: entity.name || 'Unknown',
+        type: entity.type || 'default',
         properties: entity.properties || {},
         mentions: entity.mentions || 1
       }
-    })) || [];
+    }));
 
-    const edges = graphData.relationships?.map((rel, idx) => ({
-      data: {
-        id: `edge-${idx}`,
-        source: rel.source,
-        target: rel.target,
-        label: rel.type,
-        type: rel.type
-      }
-    })) || [];
+    // Create a Set of all valid node IDs for quick lookup
+    const validNodeIds = new Set(nodes.map(node => node.data.id));
+    
+    console.log('Valid node IDs:', Array.from(validNodeIds));
 
-    const cy = cytoscape({
-      container: containerRef.current,
-      elements: [...nodes, ...edges],
-      style: [
-        {
-          selector: 'node',
-          style: {
-            'background-color': (ele) => getNodeColor(ele.data('type')),
-            'label': 'data(label)',
-            'width': (ele) => Math.min(20 + (ele.data('mentions') || 1) * 5, 60),
-            'height': (ele) => Math.min(20 + (ele.data('mentions') || 1) * 5, 60),
-            'font-size': '12px',
-            'text-valign': 'center',
-            'text-halign': 'center',
-            'color': '#333',
-            'text-outline-color': '#fff',
-            'text-outline-width': 2,
-            'border-width': 2,
-            'border-color': '#666'
-          }
-        },
-        {
-          selector: 'node:selected',
-          style: {
-            'border-width': 4,
-            'border-color': '#4CAF50',
-            'background-color': '#81C784'
-          }
-        },
-        {
-          selector: 'edge',
-          style: {
-            'width': 2,
-            'line-color': '#999',
-            'target-arrow-color': '#999',
-            'target-arrow-shape': 'triangle',
-            'curve-style': 'bezier',
-            'label': 'data(label)',
-            'font-size': '10px',
-            'text-rotation': 'autorotate',
-            'text-margin-y': -10,
-            'color': '#666',
-            'text-outline-color': '#fff',
-            'text-outline-width': 1
-          }
-        },
-        {
-          selector: 'edge:selected',
-          style: {
-            'line-color': '#4CAF50',
-            'target-arrow-color': '#4CAF50',
-            'width': 3
-          }
+    // Filter edges to only include those with valid source AND target
+    const edges = graphData.relationships
+      .map((rel, idx) => {
+        const source = String(rel.source || rel.from || '');
+        const target = String(rel.target || rel.to || '');
+        
+        return {
+          data: {
+            id: `edge-${idx}`,
+            source: source,
+            target: target,
+            label: rel.type || rel.relationship || 'related',
+            type: rel.type || rel.relationship || 'related'
+          },
+          valid: validNodeIds.has(source) && validNodeIds.has(target)
+        };
+      })
+      .filter(edge => {
+        if (!edge.valid) {
+          console.warn(`Skipping invalid edge: ${edge.data.source} -> ${edge.data.target}`);
+          return false;
         }
-      ],
-      layout: {
-        name: layout,
-        animate: true,
-        animationDuration: 500
-      }
+        return true;
+      })
+      .map(edge => ({ data: edge.data })); // Remove the 'valid' property
+
+    console.log('Processed nodes:', nodes.length);
+    console.log('Processed edges (after validation):', edges.length);
+    console.log('Sample node:', nodes[0]);
+    if (edges.length > 0) {
+      console.log('Sample edge:', edges[0]);
+    }
+
+    // Check container dimensions
+    const rect = containerRef.current.getBoundingClientRect();
+    console.log('Container dimensions:', { 
+      width: rect.width, 
+      height: rect.height,
+      top: rect.top,
+      left: rect.left
     });
 
-    cy.on('tap', 'node', (evt) => {
-      const node = evt.target;
-      setSelectedNode({
-        id: node.data('id'),
-        label: node.data('label'),
-        type: node.data('type'),
-        properties: node.data('properties'),
-        mentions: node.data('mentions')
+    if (rect.width === 0 || rect.height === 0) {
+      console.error('Container has zero dimensions! Cannot render graph.');
+      return;
+    }
+
+    try {
+      const cy = cytoscape({
+        container: containerRef.current,
+        elements: [...nodes, ...edges],
+        style: [
+          {
+            selector: 'node',
+            style: {
+              'background-color': (ele) => getNodeColor(ele.data('type')),
+              'label': 'data(label)',
+              'width': (ele) => Math.min(20 + (ele.data('mentions') || 1) * 5, 60),
+              'height': (ele) => Math.min(20 + (ele.data('mentions') || 1) * 5, 60),
+              'font-size': '12px',
+              'text-valign': 'center',
+              'text-halign': 'center',
+              'color': '#333',
+              'text-outline-color': '#fff',
+              'text-outline-width': 2,
+              'border-width': 2,
+              'border-color': '#666'
+            }
+          },
+          {
+            selector: 'node:selected',
+            style: {
+              'border-width': 4,
+              'border-color': '#4CAF50',
+              'background-color': '#81C784'
+            }
+          },
+          {
+            selector: 'edge',
+            style: {
+              'width': 2,
+              'line-color': '#999',
+              'target-arrow-color': '#999',
+              'target-arrow-shape': 'triangle',
+              'curve-style': 'bezier',
+              'label': 'data(label)',
+              'font-size': '10px',
+              'text-rotation': 'autorotate',
+              'text-margin-y': -10,
+              'color': '#666',
+              'text-outline-color': '#fff',
+              'text-outline-width': 1
+            }
+          },
+          {
+            selector: 'edge:selected',
+            style: {
+              'line-color': '#4CAF50',
+              'target-arrow-color': '#4CAF50',
+              'width': 3
+            }
+          }
+        ],
+        layout: {
+          name: layout,
+          animate: false,  // Disable animation to prevent React StrictMode issues
+          padding: 50
+        }
       });
-    });
 
-    cy.on('tap', (evt) => {
-      if (evt.target === cy) {
-        setSelectedNode(null);
-      }
-    });
+      console.log('Cytoscape instance created successfully');
 
-    cy.on('zoom', () => {
-      setZoomLevel(cy.zoom());
-    });
+      cy.on('tap', 'node', (evt) => {
+        const node = evt.target;
+        setSelectedNode({
+          id: node.data('id'),
+          label: node.data('label'),
+          type: node.data('type'),
+          properties: node.data('properties'),
+          mentions: node.data('mentions')
+        });
+      });
 
-    cyRef.current = cy;
+      cy.on('tap', (evt) => {
+        if (evt.target === cy) {
+          setSelectedNode(null);
+        }
+      });
 
-    setStats({
-      nodes: nodes.length,
-      edges: edges.length,
-      entityTypes: getEntityTypeCounts(graphData.entities || []),
-      relationshipTypes: getRelationshipTypeCounts(graphData.relationships || [])
-    });
+      cy.on('zoom', () => {
+        setZoomLevel(cy.zoom());
+      });
+
+      cyRef.current = cy;
+
+      setStats({
+        nodes: nodes.length,
+        edges: edges.length,
+        entityTypes: getEntityTypeCounts(graphData.entities || []),
+        relationshipTypes: getRelationshipTypeCounts(graphData.relationships || [])
+      });
+
+      // Fit the graph to the viewport after a short delay
+      setTimeout(() => {
+        if (cyRef.current) {
+          cyRef.current.fit(50);
+        }
+      }, 100);
+
+    } catch (err) {
+      console.error('Error creating cytoscape graph:', err);
+    }
 
     return () => {
+      console.log('Cleanup: destroying cytoscape instance');
       if (cyRef.current) {
-        cyRef.current.destroy();
+        try {
+          cyRef.current.destroy();
+        } catch (e) {
+          console.warn('Error during cleanup:', e);
+        }
+        cyRef.current = null;
       }
     };
   }, [graphData, layout]);
@@ -143,19 +232,21 @@ const GraphVisualization = ({ graphData, loading, error }) => {
       'TECHNOLOGY': '#BB8FCE',
       'default': '#95A5A6'
     };
-    return colors[type] || colors.default;
+    return colors[type?.toUpperCase()] || colors.default;
   };
 
   const getEntityTypeCounts = (entities) => {
     return entities.reduce((acc, entity) => {
-      acc[entity.type] = (acc[entity.type] || 0) + 1;
+      const type = entity.type || 'Unknown';
+      acc[type] = (acc[type] || 0) + 1;
       return acc;
     }, {});
   };
 
   const getRelationshipTypeCounts = (relationships) => {
     return relationships.reduce((acc, rel) => {
-      acc[rel.type] = (acc[rel.type] || 0) + 1;
+      const type = rel.type || rel.relationship || 'related';
+      acc[type] = (acc[type] || 0) + 1;
       return acc;
     }, {});
   };
@@ -206,11 +297,62 @@ const GraphVisualization = ({ graphData, loading, error }) => {
     }
   };
 
-  if (loading) return null;
-  if (error) return null;
+  if (loading) {
+    return (
+      <div className="graph-visualization-container">
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'center', 
+          alignItems: 'center', 
+          height: '100%',
+          fontSize: '1.2rem',
+          color: '#666'
+        }}>
+          Loading graph...
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="graph-visualization-container">
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'center', 
+          alignItems: 'center', 
+          height: '100%',
+          fontSize: '1.2rem',
+          color: '#d32f2f',
+          flexDirection: 'column',
+          gap: '1rem'
+        }}>
+          <div>Error loading graph</div>
+          <div style={{ fontSize: '0.9rem' }}>{error}</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!graphData || !graphData.entities || graphData.entities.length === 0) {
+    return (
+      <div className="graph-visualization-container">
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'center', 
+          alignItems: 'center', 
+          height: '100%',
+          fontSize: '1.2rem',
+          color: '#666'
+        }}>
+          No graph data available
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="graph-visualization-container">
+    <div className="graph-visualization-container" style={{ minHeight: '600px', height: '100vh' }}>
       <div className="graph-controls">
         <div className="control-group">
           <h3>Layout</h3>
@@ -269,8 +411,21 @@ const GraphVisualization = ({ graphData, loading, error }) => {
         </div>
       </div>
 
-      <div className="graph-content">
-        <div ref={containerRef} className="graph-canvas"></div>
+      <div className="graph-content" style={{ position: 'relative', flex: 1, minHeight: '400px' }}>
+        <div 
+          ref={containerRef} 
+          className="graph-canvas"
+          style={{ 
+            width: '100%', 
+            height: '100%', 
+            minHeight: '400px',
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0
+          }}
+        ></div>
 
         {selectedNode && (
           <div className="node-details-panel">
